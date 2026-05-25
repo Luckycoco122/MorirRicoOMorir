@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Equalizador · Speaker Detection</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #03131a;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    body { display: grid; place-items: center; }
+
+    /* ── SETUP OVERLAY ─────────────────────────────────── */
+    #setup {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      background: #030d14;
+    }
+
+    #setup h1 {
+      font-size: clamp(1rem, 3vw, 1.6rem);
+      color: #00d4ff;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .setup-card {
+      background: #05202e;
+      border: 1px solid #0e3a52;
+      border-radius: 8px;
+      padding: 28px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      width: min(90vw, 460px);
+    }
+
+    .input-row { display: flex; flex-direction: column; gap: 6px; }
+
+    .input-row label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #4a8aaa;
+    }
+
+    .file-btn {
+      background: #031822;
+      border: 1px dashed #0e3a52;
+      border-radius: 4px;
+      padding: 12px 16px;
+      color: #4a8aaa;
+      font-size: 0.8rem;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.2s, color 0.2s;
+      font-family: inherit;
+      width: 100%;
+    }
+    .file-btn:hover { border-color: #00d4ff; color: #a0dff0; }
+    .file-btn.loaded { border-color: #00d4ff; color: #00d4ff; border-style: solid; }
+
+    input[type="file"] { display: none; }
+
+    .btn-start {
+      background: #00d4ff;
+      color: #030d14;
+      border: none;
+      border-radius: 4px;
+      padding: 13px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      font-family: inherit;
+      transition: opacity 0.2s;
+    }
+    .btn-start:hover { opacity: 0.85; }
+    .btn-start:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    .setup-note {
+      font-size: 0.7rem;
+      color: #2a5a6a;
+      text-align: center;
+      max-width: 400px;
+      line-height: 1.5;
+    }
+    .setup-note code { color: #00d4ff; }
+
+    /* ── CANVAS FRAME ──────────────────────────────────── */
+    .youtube-frame {
+      position: relative;
+      width: min(100vw, 177.777vh);
+      aspect-ratio: 16 / 9;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 40%, rgba(0,195,255,0.18), transparent 36%),
+        linear-gradient(180deg, #052533 0%, #03151f 45%, #01080d 100%);
+      box-shadow: 0 0 60px rgba(0,220,255,0.12);
+    }
+
+    canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .vignette {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(90deg, rgba(0,0,0,0.42), transparent 18%, transparent 82%, rgba(0,0,0,0.42)),
+        radial-gradient(circle at center, transparent 42%, rgba(0,0,0,0.38) 100%);
+      mix-blend-mode: multiply;
+    }
+
+    .scanlines {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.12;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(255,255,255,0.05) 0px,
+        rgba(255,255,255,0.05) 1px,
+        transparent 2px,
+        transparent 5px
+      );
+    }
+
+    /* ── HUD OVERLAYS ──────────────────────────────────── */
+    #speaker-badge {
+      position: absolute;
+      top: 3.5%;
+      right: 3%;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      background: rgba(3,19,26,0.75);
+      border: 1px solid rgba(0,180,220,0.25);
+      border-radius: 20px;
+      padding: 5px 14px;
+      font-size: clamp(8px, 1.2vw, 14px);
+      letter-spacing: 0.06em;
+      color: #a0dff0;
+      backdrop-filter: blur(4px);
+      z-index: 10;
+      transition: color 0.4s;
+    }
+
+    #speaker-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #1a4055;
+      transition: background 0.3s;
+      flex-shrink: 0;
+    }
+    #speaker-dot.active { animation: pulse 0.9s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.5; transform: scale(0.75); }
+    }
+
+    /* Timeline bar at bottom */
+    #controls {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 36px;
+      background: rgba(3,10,16,0.85);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 14px;
+      z-index: 10;
+    }
+
+    #btn-play {
+      background: none;
+      border: 1px solid #0e4a62;
+      border-radius: 3px;
+      color: #00d4ff;
+      font-size: 11px;
+      padding: 3px 10px;
+      cursor: pointer;
+      font-family: inherit;
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    #btn-play:hover { background: rgba(0,212,255,0.1); }
+
+    #time-label {
+      font-size: 10px;
+      color: #2a8aaa;
+      flex-shrink: 0;
+      width: 80px;
+    }
+
+    #timeline-track {
+      flex: 1;
+      height: 12px;
+      background: #031822;
+      border-radius: 3px;
+      position: relative;
+      cursor: pointer;
+      overflow: hidden;
+    }
+
+    #timeline-segments {
+      position: absolute;
+      inset: 0;
+    }
+
+    .tl-seg {
+      position: absolute;
+      height: 100%;
+      opacity: 0.65;
+    }
+
+    #playhead-line {
+      position: absolute;
+      top: 0;
+      width: 2px;
+      height: 100%;
+      background: white;
+      transform: translateX(-1px);
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    /* ── HIDDEN VIDEO ──────────────────────────────────── */
+    #hidden-video { display: none; }
+  </style>
+</head>
+<body>
+
+<!-- ── SETUP OVERLAY ────────────────────────────────────── -->
+<div id="setup">
+  <h1>Equalizador · Speaker Detection</h1>
+
+  <div class="setup-card">
+    <div class="input-row">
+      <label>Vídeo o Audio (MP4, WAV, MP3…)</label>
+      <button class="file-btn" id="videoBtn" onclick="document.getElementById('videoInput').click()">
+        Seleccionar vídeo / audio…
+      </button>
+      <input type="file" id="videoInput" accept="video/*,audio/*">
+    </div>
+
+    <div class="input-row">
+      <label>Datos de speakers — speakers.json *</label>
+      <button class="file-btn" id="jsonBtn" onclick="document.getElementById('jsonInput').click()">
+        Seleccionar speakers.json…
+      </button>
+      <input type="file" id="jsonInput" accept=".json,application/json">
+    </div>
+
+    <button class="btn-start" id="btn-start" disabled>▶ Iniciar Visualizador</button>
+  </div>
+
+  <p class="setup-note">
+    Genera el JSON primero con:<br>
+    <code>python diarize.py tu_video.mp4</code>
+  </p>
+</div>
+
+<!-- ── CANVAS FRAME ──────────────────────────────────────── -->
+<main class="youtube-frame" id="videoFrame" style="display:none">
+  <canvas id="equalizerCanvas"></canvas>
+  <div class="scanlines"></div>
+  <div class="vignette"></div>
+
+  <!-- Speaker HUD -->
+  <div id="speaker-badge">
+    <div id="speaker-dot"></div>
+    <span id="speaker-name">Silencio</span>
+  </div>
+
+  <!-- Controls + timeline -->
+  <div id="controls">
+    <button id="btn-play">▶ Play</button>
+    <span id="time-label">00:00 / 00:00</span>
+    <div id="timeline-track">
+      <div id="timeline-segments"></div>
+      <div id="playhead-line"></div>
+    </div>
+  </div>
+</main>
+
+<video id="hidden-video"></video>
+
+<script>
+// ══════════════════════════════════════════════════════════
+//  CONFIG
+// ══════════════════════════════════════════════════════════
+const CONFIG = {
+  bars: 62,
+  rows: 38,
+  gapRatio: 0.34,
+  minHeight: 4,
+  glow: true,
+};
+
+// Color per speaker index (RGBA base for cyan shift)
+const SPEAKER_COLORS = [
+  { r: 0,   g: 200, b: 255 },  // speaker 0 – cyan
+  { r: 0,   g: 255, b: 180 },  // speaker 1 – teal-green
+  { r: 80,  g: 160, b: 255 },  // speaker 2 – blue
+  { r: 200, g: 100, b: 255 },  // speaker 3 – purple
+  { r: 255, g: 180, b: 0   },  // speaker 4 – gold
+  { r: 255, g: 80,  b: 80  },  // speaker 5 – red
+];
+const BADGE_HEX = ['#00c8ff','#00ffb4','#50a0ff','#c864ff','#ffb400','#ff5050'];
+const SILENT_COLOR = { r: 0, g: 60, b: 90 };
+
+// ══════════════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════════════
+const canvas  = document.getElementById('equalizerCanvas');
+const ctx     = canvas.getContext('2d');
+const frame   = document.getElementById('videoFrame');
+const vidEl   = document.getElementById('hidden-video');
+
+let width = 0, height = 0;
+let dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+let barSeeds = [];
+let speakerData = null;     // parsed speakers.json
+let totalDuration = 0;
+let simTime = 0;            // used when no video is loaded
+let simPlaying = false;
+let simLastTs = null;
+let hasVideo = false;
+let rafId = null;
+
+// ══════════════════════════════════════════════════════════
+//  SETUP LOGIC
+// ══════════════════════════════════════════════════════════
+const videoInput = document.getElementById('videoInput');
+const jsonInput  = document.getElementById('jsonInput');
+const btnStart   = document.getElementById('btn-start');
+const videoBtn   = document.getElementById('videoBtn');
+const jsonBtn    = document.getElementById('jsonBtn');
+
+let videoFile = null;
+let jsonLoaded = false;
+
+videoInput.addEventListener('change', e => {
+  videoFile = e.target.files[0] || null;
+  if (videoFile) {
+    videoBtn.textContent = '✓ ' + videoFile.name;
+    videoBtn.classList.add('loaded');
+  }
+});
+
+jsonInput.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    speakerData = JSON.parse(ev.target.result);
+    totalDuration = speakerData.duration || Math.max(...speakerData.segments.map(s => s.end));
+    jsonLoaded = true;
+    jsonBtn.textContent = '✓ ' + file.name;
+    jsonBtn.classList.add('loaded');
+    btnStart.disabled = false;
+  };
+  reader.readAsText(file);
+});
+
+btnStart.addEventListener('click', startVisualizer);
+
+function startVisualizer() {
+  document.getElementById('setup').style.display = 'none';
+  frame.style.display = '';
+
+  if (videoFile) {
+    vidEl.src = URL.createObjectURL(videoFile);
+    hasVideo = true;
+    vidEl.addEventListener('loadedmetadata', () => {
+      if (vidEl.duration > totalDuration) totalDuration = vidEl.duration;
+      buildTimeline();
+    });
+  } else {
+    hasVideo = false;
+    simPlaying = true;
+    buildTimeline();
+  }
+
+  buildTimeline();
+  resize();
+  window.addEventListener('resize', resize);
+
+  // Controls
+  document.getElementById('btn-play').addEventListener('click', togglePlay);
+  document.getElementById('timeline-track').addEventListener('click', seekClick);
+
+  rafId = requestAnimationFrame(loop);
+}
+
+// ══════════════════════════════════════════════════════════
+//  SPEAKER HELPERS
+// ══════════════════════════════════════════════════════════
+function getCurrentSpeaker(t) {
+  if (!speakerData) return null;
+  for (const seg of speakerData.segments) {
+    if (t >= seg.start && t <= seg.end) return seg.speaker;
+  }
+  return null;
+}
+
+function speakerIndex(name) {
+  return speakerData ? speakerData.speakers.indexOf(name) : -1;
+}
+
+// ══════════════════════════════════════════════════════════
+//  CANVAS SETUP
+// ══════════════════════════════════════════════════════════
+function resize() {
+  const rect = frame.getBoundingClientRect();
+  width  = Math.floor(rect.width);
+  height = Math.floor(rect.height);
+  dpr    = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+
+  canvas.width  = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+  canvas.style.width  = width  + 'px';
+  canvas.style.height = height + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  createSeeds();
+}
+
+function createSeeds() {
+  barSeeds = Array.from({ length: CONFIG.bars }, (_, i) => ({
+    phase:     Math.random() * Math.PI * 2,
+    speed:     0.7 + Math.random() * 1.4,
+    pulse:     0.6 + Math.random() * 1.3,
+    base:      0.22 + Math.random() * 0.18,
+    sideBoost: Math.abs(i - CONFIG.bars / 2) / (CONFIG.bars / 2),
+  }));
+}
+
+// ══════════════════════════════════════════════════════════
+//  AUDIO-LEVEL FUNCTIONS
+// ══════════════════════════════════════════════════════════
+function fakeAudioLevel(index, t) {
+  const seed = barSeeds[index];
+  const center = CONFIG.bars / 2;
+  const dist = Math.abs(index - center) / center;
+
+  const wA = Math.sin(t * seed.speed + seed.phase) * 0.5 + 0.5;
+  const wB = Math.sin(t * 2.2 + index * 0.31) * 0.5 + 0.5;
+  const wC = Math.sin(t * 4.4 + index * 0.13) * 0.5 + 0.5;
+
+  const bursts =
+    0.55 +
+    0.22 * Math.sin(t * 1.15) +
+    0.18 * Math.sin(t * 2.85 + 1.4) +
+    0.08 * Math.sin(t * 7.1);
+
+  const shape = 0.55 + 0.45 * Math.pow(dist, 0.85);
+  const level = seed.base + wA * 0.26 + wB * 0.18 + wC * 0.11 + bursts * 0.28;
+  return Math.max(0.08, Math.min(1, level * shape * seed.pulse));
+}
+
+function getLevel(index, t, isSpeaking) {
+  if (!isSpeaking) {
+    // Noise floor only – very flat
+    return 0.02 + Math.random() * 0.03;
+  }
+  return fakeAudioLevel(index, t);
+}
+
+// ══════════════════════════════════════════════════════════
+//  DRAW FUNCTIONS  (same pixel-block style as the original)
+// ══════════════════════════════════════════════════════════
+function roundedRect(x, y, w, h, r) {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + w - radius, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+  ctx.lineTo(x + w, y + h - radius);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+  ctx.lineTo(x + radius, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
+}
+
+function drawBackground(t) {
+  const gradient = ctx.createLinearGradient(0, 0, 0, height);
+  gradient.addColorStop(0,    '#062e3d');
+  gradient.addColorStop(0.48, '#03202d');
+  gradient.addColorStop(1,    '#01070b');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.save();
+  ctx.globalAlpha = 0.15;
+  ctx.strokeStyle = '#16d9ff';
+  ctx.lineWidth = 1;
+  const gridSize = Math.max(18, width / 70);
+  const offset = (t * 9) % gridSize;
+  for (let x = -offset; x < width; x += gridSize) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+  }
+  for (let y = 0; y < height; y += gridSize) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+  }
+  ctx.restore();
+
+  const radial = ctx.createRadialGradient(
+    width * 0.5, height * 0.42, 0,
+    width * 0.5, height * 0.42, width * 0.55
+  );
+  radial.addColorStop(0,    'rgba(0,210,255,0.14)');
+  radial.addColorStop(0.45, 'rgba(0,140,190,0.05)');
+  radial.addColorStop(1,    'rgba(0,0,0,0)');
+  ctx.fillStyle = radial;
+  ctx.fillRect(0, 0, width, height);
+}
+
+function drawEqualizer(t, speakerName) {
+  const spIdx      = speakerIndex(speakerName);
+  const isSpeaking = !!speakerName;
+  const color      = isSpeaking
+    ? (SPEAKER_COLORS[spIdx] || SPEAKER_COLORS[0])
+    : SILENT_COLOR;
+
+  const floorY    = height * 0.73;
+  const availH    = height * 0.56;
+  const padX      = width * 0.025;
+  const totalW    = width - padX * 2;
+  const slotW     = totalW / CONFIG.bars;
+  const barW      = slotW * (1 - CONFIG.gapRatio);
+  const blockGap  = Math.max(3, height * 0.006);
+  const blockH    = Math.max(6, (availH / CONFIG.rows) - blockGap);
+  const radius    = Math.max(3, blockH * 0.42);
+
+  ctx.save();
+  ctx.shadowColor = isSpeaking
+    ? `rgba(${color.r},${color.g},${color.b},0.75)`
+    : 'transparent';
+  ctx.shadowBlur = CONFIG.glow && isSpeaking ? Math.max(9, width * 0.008) : 0;
+
+  for (let i = 0; i < CONFIG.bars; i++) {
+    const x      = padX + i * slotW + (slotW - barW) / 2;
+    const level  = getLevel(i, t, isSpeaking);
+    const active = Math.round(CONFIG.minHeight + level * (CONFIG.rows - CONFIG.minHeight));
+
+    for (let row = 0; row < active; row++) {
+      const y    = floorY - row * (blockH + blockGap);
+      const fade = row / CONFIG.rows;
+
+      const alpha = isSpeaking
+        ? 0.55 + 0.45 * (1 - fade * 0.5)
+        : 0.12 + 0.08 * (1 - fade);
+
+      const cg = isSpeaking
+        ? Math.round(color.g * 0.7 + 65 * (1 - fade))
+        : color.g;
+
+      ctx.fillStyle = `rgba(${color.r},${cg},${color.b},${alpha})`;
+      roundedRect(x, y, barW, blockH, radius);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+
+  // Floor line
+  ctx.save();
+  ctx.globalAlpha = 0.22;
+  ctx.strokeStyle = isSpeaking ? `rgb(${color.r},${color.g},${color.b})` : '#103040';
+  ctx.lineWidth   = Math.max(1, height * 0.002);
+  ctx.beginPath();
+  ctx.moveTo(0, floorY + blockH * 1.5);
+  ctx.lineTo(width, floorY + blockH * 1.5);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBottomFade() {
+  const fade = ctx.createLinearGradient(0, height * 0.62, 0, height);
+  fade.addColorStop(0, 'rgba(0,0,0,0)');
+  fade.addColorStop(1, 'rgba(0,0,0,0.58)');
+  ctx.fillStyle = fade;
+  ctx.fillRect(0, height * 0.62, width, height * 0.38);
+}
+
+// ══════════════════════════════════════════════════════════
+//  HUD UPDATE
+// ══════════════════════════════════════════════════════════
+function updateHUD(speakerName, currentTime) {
+  const dot  = document.getElementById('speaker-dot');
+  const name = document.getElementById('speaker-name');
+  const spIdx = speakerIndex(speakerName);
+
+  if (speakerName) {
+    const hex = BADGE_HEX[spIdx] || BADGE_HEX[0];
+    dot.style.background = hex;
+    dot.classList.add('active');
+    name.textContent = speakerName;
+    name.style.color = hex;
+  } else {
+    dot.style.background = '#1a4055';
+    dot.classList.remove('active');
+    name.textContent = 'Silencio';
+    name.style.color = '#4a8aaa';
+  }
+
+  // Time label + playhead
+  document.getElementById('time-label').textContent =
+    fmtTime(currentTime) + ' / ' + fmtTime(totalDuration);
+
+  if (totalDuration > 0) {
+    const pct = (currentTime / totalDuration) * 100;
+    document.getElementById('playhead-line').style.left = pct + '%';
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  MAIN LOOP
+// ══════════════════════════════════════════════════════════
+function loop(ts) {
+  // Determine current playback time
+  let currentTime;
+  if (hasVideo) {
+    currentTime = vidEl.currentTime;
+  } else {
+    if (simPlaying) {
+      if (simLastTs !== null) {
+        simTime += (ts - simLastTs) / 1000;
+        if (simTime > totalDuration) simTime = 0;
+      }
+      simLastTs = ts;
+    } else {
+      simLastTs = null;
+    }
+    currentTime = simTime;
+  }
+
+  const t = currentTime;
+  const speaker = getCurrentSpeaker(t);
+
+  drawBackground(t);
+  drawEqualizer(t, speaker);
+  drawBottomFade();
+
+  updateHUD(speaker, t);
+
+  rafId = requestAnimationFrame(loop);
+}
+
+// ══════════════════════════════════════════════════════════
+//  CONTROLS
+// ══════════════════════════════════════════════════════════
+function togglePlay() {
+  const btn = document.getElementById('btn-play');
+  if (hasVideo) {
+    if (vidEl.paused) { vidEl.play(); btn.textContent = '⏸ Pause'; }
+    else              { vidEl.pause(); btn.textContent = '▶ Play'; }
+  } else {
+    simPlaying = !simPlaying;
+    btn.textContent = simPlaying ? '⏸ Pause' : '▶ Play';
+  }
+}
+
+function seekClick(e) {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const pct  = (e.clientX - rect.left) / rect.width;
+  const time = pct * totalDuration;
+  if (hasVideo) {
+    vidEl.currentTime = time;
+  } else {
+    simTime = time;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  TIMELINE SEGMENTS (coloured per speaker)
+// ══════════════════════════════════════════════════════════
+function buildTimeline() {
+  if (!speakerData || totalDuration <= 0) return;
+  const container = document.getElementById('timeline-segments');
+  container.innerHTML = '';
+
+  speakerData.segments.forEach(seg => {
+    const idx   = speakerData.speakers.indexOf(seg.speaker);
+    const hex   = BADGE_HEX[idx] || BADGE_HEX[0];
+    const left  = (seg.start / totalDuration) * 100;
+    const width = Math.max(((seg.end - seg.start) / totalDuration) * 100, 0.25);
+
+    const el = document.createElement('div');
+    el.className = 'tl-seg';
+    el.style.left       = left + '%';
+    el.style.width      = width + '%';
+    el.style.background = hex;
+    el.title = `${seg.speaker}: ${fmtTime(seg.start)} → ${fmtTime(seg.end)}`;
+    container.appendChild(el);
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+//  UTILS
+// ══════════════════════════════════════════════════════════
+function fmtTime(s) {
+  const h   = Math.floor(s / 3600);
+  const m   = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  if (h > 0) return `${pad(h)}:${pad(m)}:${pad(sec)}`;
+  return `${pad(m)}:${pad(sec)}`;
+}
+function pad(n) { return String(n).padStart(2, '0'); }
+</script>
+</body>
+</html>
